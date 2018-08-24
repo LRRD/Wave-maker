@@ -18,14 +18,16 @@
 // Added acceleration controls to the paddle
 // Changed menu layout to a flat style with adjustments on each menu selection and an information display screen
 // Added walking character to show when paddle is moving
+// Added check encoder function to menu 0 to eliminate pitch discrepencies between screens
+//
 
 // Global Variables & Magic Numbers
 // Pin References
 const uint8_t directional = A0; //Direction
 const uint8_t stepper = A1; //Step
 const uint8_t enable = A2; //Enable
-const uint8_t hall1 = A7; //Hall sensor
-const uint8_t hall2 = A6; //Hall sensor
+const uint8_t backSensor = A7; //Hall sensor
+const uint8_t neutralSensor = A6; //Hall sensor
 const uint8_t led1 = 3;			//LED pin reference
 const uint8_t led2 = 5;		//LED pin reference
 const uint8_t encoderswitch = 7;	//Encoder poin reference
@@ -33,14 +35,17 @@ const uint8_t channelB = 6;	//Encoder pin reference
 const uint8_t channelA = 4;	//Encoder pin reference
 
 //Power
-uint16_t power = 300; //Power, used uint because it can be negative temporarily when decreasing by large increments
-uint16_t lastpower = 300; //Used to refresh power
+uint16_t power = 200; //Power, used uint because it can be negative temporarily when decreasing by large increments
+uint16_t lastpower = 200; //Used to refresh power
+uint8_t pwpcnt = 0; //Used to display power as a %
 
 //Step
 uint16_t stepPulse_Micros = 25; //Default delay between each step
 int stepcount = 0; //Keeps track of steps, changed to int so we can use negative numbers
-int stepRange = -1000; //# of steps in half range in both directions = -250 * gear ratio
-int lastStepRange = -1000; //Used to refresh step range
+int stepRange = -900; //# of steps in half range in both directions = -250 * gear ratio
+int lastStepRange = -900; //Used to refresh step range
+int farBack = -1000; //Step count at far back sensor
+float travelDeg = 0.0; //Degrees of travel at current steprange setting
 
 //Waves
 float lastwpm = 0.0; //Used to refresh waves per minute
@@ -58,13 +63,13 @@ uint32_t lasttime = 0;  //Used for wave delay timing
 
 //Accel/decel
 float percent = .35; //Percent of travel to be used as accel/decel
-float celery = .03; //Constant that controls speed of acceleration 
-float lastCelery = .03; //Used for 'celeration speed refresh
-float lastPercent = .35; //Used for 'celeration range refresh
+float celery = 0.0; //Constant that controls speed of acceleration
 uint32_t celerydelay = 0; //Delay for current step in accel/decel part of range
 uint16_t pdif = 0; //Difference between current step and reference point for accel/decel
 float pointer = 0.0; //Reference point for accel/decel
 float pointer2 = 0.0; //Reference piont 2 for accel/decel
+float celerAval = -0.00008421;
+float celerBval = 0.0421;
 
 //Tsunami
 bool tsunamitoggle = false; //Used to toggle tsunami
@@ -98,6 +103,7 @@ uint8_t errorcode = 0; //Used to display current error code
 //Other
 bool rotation = true; //Used to switch direction
 bool starter = true; //Used to toggle wave start/stop
+bool starter2 = false; //Used to home when starting
 uint16_t timeout = 4000; //Ms until homing function timeout
 uint8_t menu = 0; //Menu #
 bool indicator = true; //Used for walking paddle character
@@ -188,10 +194,11 @@ void backlightBrightness(uint8_t brightness) {
 void constraints()
 {
 	delaybetweenwaves = constrain(delaybetweenwaves, 100, 60000);
-	power = constrain(power, 25, 1200); //Powerset can be between 1 and 250
-	stepRange = constrain(stepRange, -1100, -100); //-275 * gear ratio, and -25 * gear ratio
+	power = constrain(power, 25, 500); //Powerset can be between 1 and 250
+	stepRange = constrain(stepRange, -1000, -100); //-275 * gear ratio, and -25 * gear ratio
 	percent = constrain(percent, .05, .45);
-	celery = constrain(celery, .0001, .05);
+	celery = power * celerAval + celerBval; //Computer celery based on power
+	celery = constrain(celery, .0001, .05); //Constrain celery
 }
 
 static void check_encoder() // Look for encoder rotation, updating encoder_count as necessary.
@@ -247,12 +254,12 @@ static void check_encoder() // Look for encoder rotation, updating encoder_count
 		//Knob twist CW
 		if (gray_code == cw_gray_codes[previous_gray_code])
 		{
-			power += 25;
+			power -= 5;
 		}
 		//Knob twist CW
 		else if (gray_code == ccw_gray_codes[previous_gray_code])
 		{
-			power -= 25;
+			power += 5;
 		}
 	}
 	else if (menu == 3)
@@ -260,38 +267,12 @@ static void check_encoder() // Look for encoder rotation, updating encoder_count
 		//Knob twist CW
 		if (gray_code == cw_gray_codes[previous_gray_code])
 		{
-			stepRange -= 5;
+			stepRange -= 11;
 		}
 		//Knob twist CW
 		else if (gray_code == ccw_gray_codes[previous_gray_code])
 		{
-			stepRange += 5;
-		}
-	}
-	else if (menu == 4)
-	{
-		//Knob twist CW
-		if (gray_code == cw_gray_codes[previous_gray_code])
-		{
-			percent += .01;
-		}
-		//Knob twist CW
-		else if (gray_code == ccw_gray_codes[previous_gray_code])
-		{
-			percent -= .01;
-		}
-	}
-	else if (menu == 5)
-	{
-		//Knob twist CW
-		if (gray_code == cw_gray_codes[previous_gray_code])
-		{
-			celery += .001;
-		}
-		//Knob twist CW
-		else if (gray_code == ccw_gray_codes[previous_gray_code])
-		{
-			celery -= .001;
+			stepRange += 11;
 		}
 	}
 	previous_gray_code = gray_code; //Stores current gray code for future comparison
@@ -312,7 +293,7 @@ void switchpressed() //Called when encoder button pressed, reads time between fa
 	{
 		pressTime = millis() - pressTimeStart;
 		lastpress = HIGH; //Reset indicator
-		if (menu < 5) //Switch between standard menus
+		if (menu < 3) //Switch between standard menus
 		{
 			if (pressTime < 500) //Short press
 			{
@@ -327,11 +308,11 @@ void switchpressed() //Called when encoder button pressed, reads time between fa
 			else if (pressTime >= 2500) //Longer press
 			{
 				starter = false;
-				menu = 6;
+				menu = 4;
 				delay(50);
 			}
 		}
-		else if (menu == 5)
+		else if (menu == 3)
 		{
 			if (pressTime < 500) //Short press
 			{
@@ -346,7 +327,7 @@ void switchpressed() //Called when encoder button pressed, reads time between fa
 			else if (pressTime >= 2500) //Longer press
 			{
 				starter = false;
-				menu = 6;
+				menu = 4;
 				delay(50);
 			}
 		}
@@ -386,6 +367,8 @@ void togglestart() //Flips start bool when called
   {
 	  rotation = true;
 	  digitalWrite(led1, HIGH); //Indicate that wave action is started
+	  starter2 = true;
+	  home2();
   }
   starter = !starter; //Toggle starter bool
 }
@@ -445,7 +428,7 @@ void wave2()
 		}
 		stepcount--; //Decrease step counter
 		//Zero counter at known point
-		if (analogRead(hall2) < 100)
+		if (analogRead(neutralSensor) < 100)
 		{
 			stepcount = 0;
 		}
@@ -461,10 +444,7 @@ void wave2()
 		{
 			cursorTopRight(); //Set cursor to desired pos
 			cursorLeft(5);
-			if (totalWaves > 99999) //Print waves elapsed (5 Positions Max)
-			{
-				totalWaves = 99999;
-			}
+			totalWaves = constrain(totalWaves, 1, 99999);
 			Serial.print(totalWaves - 1); //-1 Because wave increments when the paddle draws back, not goes forward
 			Serial.print("W");		
 		}
@@ -520,7 +500,7 @@ void wave2()
 			}
 		}
 		stepcount++; //Decrease step counter
-		if (analogRead(hall2) < 100)
+		if (analogRead(neutralSensor) < 100)
 		{
 			stepcount = 0;
 		}
@@ -589,7 +569,7 @@ void tsunami()
 		}
 		stepcount--; //Decrease step counter
 					 //Zero counter at known point
-		if (analogRead(hall2) < 100)
+		if (analogRead(neutralSensor) < 100)
 		{
 			stepcount = 0;
 		}
@@ -637,7 +617,7 @@ void tsunami()
 			}
 		}
 		stepcount++; //Decrease step counter
-		if (analogRead(hall2) < 100)
+		if (analogRead(neutralSensor) < 100)
 		{
 			stepcount = 0;
 		}
@@ -664,12 +644,17 @@ void menuselect2()
 		if ((dps > 1) && (dps < 115))
 		{
 			Serial.print(dps, 1); //# of degrees to move per second at current speed
-			Serial.print(" DPS ");
+			Serial.print(" DPS  HOME");
 		}
 		else
 		{
-			Serial.print("? DPS ");
+			Serial.print("0.0 DPS  HOME");
 		}
+		cursorTopRight(); //Set cursor to desired pos
+		cursorLeft(5);
+		totalWaves = constrain(totalWaves, 1, 99999);
+		Serial.print(totalWaves - 1); //-1 Because wave increments when the paddle draws back, not goes forward
+		Serial.print("W");
 		while (menu == 0)
 		{
 			if (starter) //If the wave action is going:
@@ -716,11 +701,11 @@ void menuselect2()
 							if ((dps > 1) && (dps < 115))
 							{
 								Serial.print(dps, 1); //# of degrees to move per second at current speed
-								Serial.print(" DPS ");
+								Serial.print(" DPS  HOME");
 							}
 							else
 							{
-								Serial.print("? DPS ");
+								Serial.print("0.0 DPS  HOME");
 							}
 						}
 						waveTime = (totalwavetime)+(delaybetweenwaves); //Millisec delay between waves
@@ -743,6 +728,7 @@ void menuselect2()
 					wave2(); //Keep calling wave until the current wave is complete
 				}
 			}
+			check_encoder(); //Process the encoder twist checking to eliminate slight pitch discrepencies when changing between screens
 			switchpressed(); //Check for a switch press
 		}
 		break;
@@ -750,7 +736,7 @@ void menuselect2()
 	case 1: //Waves per minute adjustment
 		clearLCD();
 		cursorHome();
-		Serial.print("Delay/Wave");
+		Serial.print("Delay btwn Waves");
 		cursorLine2();
 		Serial.print("< ");
 		if (delaybetweenwaves > 9900)
@@ -826,11 +812,12 @@ void menuselect2()
 	case 2: //Wave Power Adjustment
 		clearLCD();
 		cursorHome();
-		Serial.print("Power Set");
+		Serial.print("Paddle Speed");
 		cursorLine2();
 		Serial.print("< ");
-		Serial.print(power); //Speed of wave action
-		Serial.print(" >");
+		pwpcnt = 101 - (map(power, 25, 500, 1, 100));
+		Serial.print(pwpcnt); //Speed of wave action
+		Serial.print("% >");
 		while (menu == 2)
 		{
 			if (starter) //If the wave action is going:
@@ -862,13 +849,14 @@ void menuselect2()
 			}
 			if (power != lastpower)
 			{
+				pwpcnt = 101 - (map(power, 25, 500, 1, 100));
 				lastpower = power;
 				cursorLine2();
 				Serial.print("                ");
 				cursorLine2();
 				Serial.print("< ");
-				Serial.print(power); //Speed of wave action
-				Serial.print(" >");
+				Serial.print(pwpcnt); //Speed of wave action
+				Serial.print("% >");
 			}
 			check_encoder(); //Check to see if knob is being twisted
 			switchpressed(); //Check to see if knob is being pressed
@@ -881,8 +869,9 @@ void menuselect2()
 		Serial.print("Travel Range");
 		cursorLine2();
 		Serial.print("< ");
-		Serial.print(abs(stepRange)); //Range of steps in half-travel
-		Serial.print(" Steps >");
+		travelDeg = abs((stepRange * .36) / 4);
+		Serial.print(travelDeg, 0); //Range of steps in half-travel
+		Serial.print(" Degrees >");
 		while (menu == 3)
 		{
 			if (starter) //If the wave action is going:
@@ -919,8 +908,9 @@ void menuselect2()
 				Serial.print("                ");
 				cursorLine2();
 				Serial.print("< ");
-				Serial.print(abs(stepRange)); //Range of steps in half-travel
-				Serial.print(" Steps >");
+				travelDeg = abs((stepRange * .36) / 4);
+				Serial.print(travelDeg, 0); //Range of steps in half-travel
+				Serial.print(" Degrees >");
 				//Recalculate things that rely on steprange
 				pointer = stepRange * (1 - percent); //Pointers are desired % of the way through the step range at either end
 				pointer2 = (abs(pointer)); //First pointer is on negative side of 0, this is on positive side of 0
@@ -929,144 +919,40 @@ void menuselect2()
 			switchpressed(); //Check to see if knob is being pressed
 		}
 		break;
-
-	case 4: //Accel/Decel Range Adjustment
-		clearLCD();
-		cursorHome();
-		Serial.print("Accel/Decel");
-		cursorLine2();
-		Serial.print("Range ");
-		Serial.print("< ");
-		Serial.print((percent * 100), 0); //Range of accel/decel as % of travel
-		Serial.print("% >");
-		while (menu == 4)
-		{
-			if (starter) //If the wave action is going:
-			{
-				if ((!error) && (!lasterror)) //No error, display walking paddle character
-				{
-					uint32_t elapsedTime = millis() - lasttime; //Check time since last refresh
-					if (elapsedTime >= 1000) //Refresh display
-					{
-						cursorBottomRight();
-						lasttime = millis(); //Last refresh = now
-						indicator = !indicator;
-						if (indicator)
-						{
-							Serial.print('/');
-						}
-						else
-						{
-							Serial.print('|');
-						}
-					}
-
-				}
-				timeSinceLastWave = millis() - lastWaveTime; //Elapsed time between waves
-				if ((timeSinceLastWave >= delaybetweenwaves) && (!error)) //Time since last wave is due
-				{
-					wave2(); //Keep calling wave until the current wave is complete
-				}
-			}
-			if (percent != lastPercent)
-			{
-				lastPercent = percent;
-				cursorLine2();
-				Serial.print("                ");
-				cursorLine2();
-				Serial.print("Range ");
-				Serial.print("< ");
-				Serial.print((percent * 100), 0); //Range of accel/decel as % of travel
-				Serial.print("% >");
-				//Recalculate things that rely on percent
-				pointer = stepRange * (1 - percent); //Pointers are desired % of the way through the step range at either end
-				pointer2 = (abs(pointer)); //First pointer is on negative side of 0, this is on positive side of 0
-
-			}
-			check_encoder(); //Check to see if knob is being twisted
-			switchpressed(); //Check to see if knob is being pressed
-		}
-		break;
- 
-	case 5: //Accel/Decel Speed Adjustment
-		clearLCD();
-		cursorHome();
-		Serial.print("Accel/Decel");
-		cursorLine2();
-		Serial.print("Speed ");
-		Serial.print("< ");
-		Serial.print(celery, 3); //Speed of accel/decel
-		Serial.print(" >");
-		while (menu == 5)
-		{
-			if (starter) //If the wave action is going:
-			{
-				if ((!error) && (!lasterror)) //No error, display walking paddle character
-				{
-					uint32_t elapsedTime = millis() - lasttime; //Check time since last refresh
-					if (elapsedTime >= 1000) //Refresh display
-					{
-						cursorBottomRight();
-						lasttime = millis(); //Last refresh = now
-						indicator = !indicator;
-						if (indicator)
-						{
-							Serial.print('/');
-						}
-						else
-						{
-							Serial.print('|');
-						}
-					}
-				}
-				timeSinceLastWave = millis() - lastWaveTime; //Elapsed time between waves
-				if ((timeSinceLastWave >= delaybetweenwaves) && (!error)) //Time since last wave is due
-				{
-					wave2(); //Keep calling wave until the current wave is complete
-				}
-			}
-			if (celery != lastCelery)
-			{
-				lastCelery = celery;
-				cursorLine2();
-				Serial.print("                ");
-				cursorLine2();
-				Serial.print("Speed ");
-				Serial.print("< ");
-				Serial.print(celery, 3); //Speed of accel/decel
-				Serial.print(" >");
-			}
-			check_encoder(); //Check to see if knob is being twisted
-			switchpressed(); //Check to see if knob is being pressed
-		}
-		break;
-
 		
-	case 6: //Tsunami Mode
+	case 4: //Tsunami Mode
 		clearLCD();
 		cursorHome();
 		Serial.print("Tsunami Mode");
 		cursorLine2();
 		Serial.print("Activated");
-		delay(1500);
+		delay(2000);
 		clearLCD();
 		cursorHome();
-		Serial.print("<2.5s Press for");
+		Serial.print("Encoder Press");
 		cursorLine2();
-		Serial.print("Tsunami Wave");
-		delay(1500);
+		Serial.print("Length Controls:");
+		delay(3000);
 		clearLCD();
 		cursorHome();
-		Serial.print(">2.5s Press for");
+		Serial.print("Less Than 2.5 s");
+		cursorLine2();
+		Serial.print("Send Tsunami");
+		delay(3000);
+		clearLCD();
+		cursorHome();
+		Serial.print("More Than 2.5 s");
 		cursorLine2();
 		Serial.print("Standard Mode");
-		delay(1500);
+		delay(3000);
 		clearLCD();
 		cursorHome();
+		starter2 = true;
+		home2();
 		Serial.print("Tsunami Mode");
 		cursorLine2();
 		Serial.print("(Press)");
-		while (menu == 6)
+		while (menu == 4)
 		{
 			if ((tsunamitoggle) && (!lasttsunami)) //Tsunami toggled on, indicate as such
 			{
@@ -1107,7 +993,7 @@ void home()
 	while (starter)
 	{
 		elapsedMS2 = millis() - elapsedMS;
-		uint16_t reading = analogRead(hall1);
+		uint16_t reading = analogRead(backSensor);
 		if (elapsedMS2 >= timeout)
 		{
 			digitalWrite(enable, HIGH); //Disable coils
@@ -1150,6 +1036,45 @@ void home()
 	}
 }
 
+void home2() //Paddle motion started, travel backwards until one of two sensors is detected, reset step count to known physical point
+{
+	bool reverse = false;
+	while (starter2)
+	{
+		uint16_t reading = analogRead(backSensor);
+		uint16_t reading2 = analogRead(neutralSensor);
+		if ((reading < 100) && (!reverse))
+		{
+			delay(500); //Wait before chaning directions
+			reverse = true; //Go back to neutral sensor
+		}
+		else if (reading2 < 100)
+		{
+			stepcount = 0;
+			starter2 = false;
+			delay(500);
+		}
+		else if (((reading > 500) && (reading2 > 500)) && (!reverse))
+		{
+			digitalWrite(enable, LOW); //Enable
+			digitalWrite(directional, HIGH);
+			digitalWrite(stepper, HIGH); //Start stepping
+			delayMicroseconds(stepPulse_Micros); //Timer between pulses
+			digitalWrite(stepper, LOW); //Stop stepping
+			delayMicroseconds(Tpower * Tspeed); //Timer between pulses
+		}
+		if ((reverse) && (reading2 > 500))
+		{
+			digitalWrite(enable, LOW); //Enable
+			digitalWrite(directional, LOW);
+			digitalWrite(stepper, HIGH); //Start stepping
+			delayMicroseconds(stepPulse_Micros); //Timer between pulses
+			digitalWrite(stepper, LOW); //Stop stepping
+			delayMicroseconds(Tpower * Tspeed); //Timer between pulses
+		}
+	}
+}
+
 // The setup() function runs once each time the micro-controller starts
 void setup()
 {
@@ -1157,8 +1082,8 @@ void setup()
   pinMode(stepper, OUTPUT);
   pinMode(directional, OUTPUT);
   pinMode(enable, OUTPUT);
-  pinMode(hall1, INPUT);
-  pinMode(hall2, INPUT);
+  pinMode(backSensor, INPUT);
+  pinMode(neutralSensor, INPUT);
   pinMode(led1, OUTPUT);
   pinMode(led2, OUTPUT);
   pinMode(encoderswitch, INPUT_PULLUP);
@@ -1179,30 +1104,31 @@ void setup()
   cursorLine2();
   Serial.print("www.EMRIVER.com");
   delay(1250);
-  clearLCD();      
-  cursorHome();
-  Serial.print("  Press Length  ");
-  cursorLine2();
-  Serial.print("   Controls:   ");
-  delay(1250);
   clearLCD();          
   cursorHome();
-  Serial.print("Press < .5s");
+  Serial.print("Encoder Press");
   cursorLine2();
-  Serial.print("Switches Line");
-  delay(1250);
+  Serial.print("Length Controls:");
+  delay(3000);
   clearLCD();            
   cursorHome();
-  Serial.print(".5s <Press< 2.5s");
+  Serial.print("Less Than .5 s");
   cursorLine2();
-  Serial.print("Start/Stop Waves");
-  delay(1250);
+  Serial.print("Changes Menu");
+  delay(3000);
   clearLCD();             
   cursorHome();
-  Serial.print("2.5s < Press");
+  Serial.print("More Than .5 s");
   cursorLine2();
-  Serial.print("Toggle Tsunami");
-  delay(1250);
+  Serial.print("Start/Stop Waves");
+  delay(3000);
+  clearLCD();
+  cursorHome();
+  Serial.print("More Than 2.5 s");
+  cursorLine2();
+  Serial.print("Tsunami Mode");
+  delay(3000);
+  clearLCD();
   home(); //Homing function to test
 }
 
