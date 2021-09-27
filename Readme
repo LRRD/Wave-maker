@@ -1,0 +1,11 @@
+Wave Maker instrument for emriver models, fits Em2, Em3, Em4 or can be custom made to length for custom sized stream tables.
+The Wave Maker controller drives a stepper motor to precisely control the movement of a paddle to displace water and create waves.
+The timing pulley has two magnets and the device has hall effect sensors to detect those magnets, they're used for positioning.
+The Wave Maker is the only controller to utilize both 328p microcontrollers on the Big Muddy Control Board.
+The secondary processor is constantly sending microsteps to the stepper motor, and most any interrupt becomes noticeable.
+The primary processor scans for user input on the optical encoder, drives the LCD, does most of the math, and periodically sends paramater changes to the secondary via I2C.
+The user is able to adjust time in seconds to wait between each wave, paddle speed in the form of a percent, and travel range in degrees.
+As the user updates these parameters, the device measures time between start and stop of the wave to calculate and report back waves per minute.
+The instrument also has a tsunami mode, featuring a more powerful wave than any of the automatic settings, and each wave is sent manually by clicking the encoder button.
+The paddle accelerates and decelerates at the start/stop of each movement to prevent damage or excessive splashing.
+The paddle homes to the central position upon power up.
